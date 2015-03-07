@@ -99,7 +99,7 @@ func main() {
 	handler := appHandler(handlerConfig{
 		db:      db,
 		cc:      cc,
-		lc:      *lc,
+		lc:      lc,
 		rc:      rc,
 		pgxpool: pgxpool,
 		key:     os.Getenv("AUTH_KEY"),
