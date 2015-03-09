@@ -55,9 +55,22 @@ type fakeLogAggregatorClient struct {
 	subs map[string]<-chan *logaggc.Message
 }
 
-func (f *fakeLogAggregatorClient) GetLog(channelID string, lines int, follow bool) (io.ReadCloser, error) {
+func (f *fakeLogAggregatorClient) GetLog(channelID string, options *logaggc.LogOpts) (io.ReadCloser, error) {
 	buf := f.logs[channelID]
-	if lines == 0 || lines > len(buf) {
+	lines := len(buf)
+	follow := false
+	jobID, processType := "", ""
+
+	if options != nil {
+		opts := *options
+		if opts.Lines != nil {
+			lines = *opts.Lines
+		}
+		follow = opts.Follow
+		jobID = opts.JobID
+		processType = opts.ProcessType
+	}
+	if lines > len(buf) {
 		lines = len(buf)
 	}
 	pr, pw := io.Pipe()
@@ -66,6 +79,12 @@ func (f *fakeLogAggregatorClient) GetLog(channelID string, lines int, follow boo
 	go func() {
 		defer pw.Close()
 		for i := 0 + (len(buf) - lines); i < len(buf); i++ {
+			if jobID != "" && jobID != buf[i].JobID {
+				continue
+			}
+			if processType != "" && processType != buf[i].ProcessType {
+				continue
+			}
 			if err := enc.Encode(buf[i]); err != nil {
 				pw.CloseWithError(err)
 				return
@@ -83,27 +102,55 @@ func (f *fakeLogAggregatorClient) GetLog(channelID string, lines int, follow boo
 	return pr, nil
 }
 
+func intPointer(i int) *int {
+	return &i
+}
+
 func (s *S) TestGetAppLog(c *C) {
 	appName := "get-app-log-test"
 	s.createTestApp(c, &ct.App{Name: appName})
 
-	rc, err := s.c.GetAppLog(appName, 0, false)
-	c.Assert(err, IsNil)
-	defer rc.Close()
-
-	msgs := make([]logaggc.Message, 0)
-	dec := json.NewDecoder(rc)
-	for {
-		var msg logaggc.Message
-		err := dec.Decode(&msg)
-		if err == io.EOF {
-			break
-		}
-		c.Assert(err, IsNil)
-		msgs = append(msgs, msg)
+	tests := []struct {
+		opts     *ct.LogOpts
+		expected []logaggc.Message
+	}{
+		{
+			expected: sampleMessages,
+		},
+		{
+			opts:     &ct.LogOpts{Lines: intPointer(1)},
+			expected: sampleMessages[1:],
+		},
+		{
+			opts:     &ct.LogOpts{ProcessType: "web"},
+			expected: sampleMessages[:1],
+		},
+		{
+			opts:     &ct.LogOpts{JobID: "11111111111111111111111111111111"},
+			expected: sampleMessages[:1],
+		},
 	}
 
-	c.Assert(msgs, DeepEquals, sampleMessages)
+	for _, test := range tests {
+		c.Logf("opts: %+v", test.opts)
+		rc, err := s.c.GetAppLog(appName, test.opts)
+		c.Assert(err, IsNil)
+		defer rc.Close()
+
+		msgs := make([]logaggc.Message, 0)
+		dec := json.NewDecoder(rc)
+		for {
+			var msg logaggc.Message
+			err := dec.Decode(&msg)
+			if err == io.EOF {
+				break
+			}
+			c.Assert(err, IsNil)
+			msgs = append(msgs, msg)
+		}
+
+		c.Assert(msgs, DeepEquals, test.expected)
+	}
 }
 
 func (s *S) TestGetAppLogFollow(c *C) {
@@ -115,7 +162,10 @@ func (s *S) TestGetAppLogFollow(c *C) {
 	s.flac.subs[appName] = subc
 	defer func() { delete(s.flac.subs, appName) }()
 
-	rc, err := s.c.GetAppLog(appName, 0, true)
+	rc, err := s.c.GetAppLog(appName, &ct.LogOpts{
+		Lines:  nil,
+		Follow: true,
+	})
 	c.Assert(err, IsNil)
 	defer rc.Close()
 

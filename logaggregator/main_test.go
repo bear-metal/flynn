@@ -86,26 +86,61 @@ func (s *LogAggregatorTestSuite) TestAggregatorBuffersMessages(c *C) {
 		<-messageReceived // wait for messages to be received
 	}
 
-	msgc := s.agg.ReadLastN("app", -1, make(chan struct{}))
-	timeout := time.After(2 * time.Second)
-	msgs := make([]*rfc5424.Message, 0)
-
-Loop:
-	for {
-		select {
-		case msg := <-msgc:
-			if msg == nil {
-				break Loop
+	readAllMsgs := func(msgc <-chan *rfc5424.Message) []*rfc5424.Message {
+		timeout := time.After(2 * time.Second)
+		msgs := make([]*rfc5424.Message, 0)
+		for {
+			select {
+			case msg := <-msgc:
+				if msg == nil {
+					return msgs
+				}
+				msgs = append(msgs, msg)
+			case <-timeout:
+				c.Fatalf("timeout waiting for send on msgc")
 			}
-			msgs = append(msgs, msg)
-		case <-timeout:
-			c.Fatalf("timeout waiting for send on msgc")
 		}
 	}
 
-	c.Assert(msgs, HasLen, 2)
-	c.Assert(string(msgs[0].ProcID), Equals, "web.1")
-	c.Assert(string(msgs[1].ProcID), Equals, "web.2")
+	tests := []struct {
+		lines           int
+		filters         []filter
+		expectedLen     int
+		expectedProcIDs []string
+	}{
+		{
+			lines:           -1,
+			filters:         nil,
+			expectedLen:     2,
+			expectedProcIDs: []string{"web.1", "web.2"},
+		},
+		{
+			lines: -1,
+			filters: []filter{
+				filterJobID{[]byte("1")},
+			},
+			expectedLen:     1,
+			expectedProcIDs: []string{"web.1"},
+		},
+		{
+			lines: 1,
+			filters: []filter{
+				filterJobID{[]byte("1")},
+			},
+			expectedLen:     1,
+			expectedProcIDs: []string{"web.1"},
+		},
+	}
+
+	for _, test := range tests {
+		c.Logf("test: %+v", test)
+		msgc := s.agg.ReadLastN("app", test.lines, test.filters, make(chan struct{}))
+		msgs := readAllMsgs(msgc)
+		c.Assert(msgs, HasLen, test.expectedLen)
+		for i, procID := range test.expectedProcIDs {
+			c.Assert(string(msgs[i].ProcID), Equals, procID)
+		}
+	}
 }
 
 func (s *LogAggregatorTestSuite) TestAggregatorReadLastNAndSubscribe(c *C) {
@@ -131,8 +166,27 @@ func (s *LogAggregatorTestSuite) TestAggregatorReadLastNAndSubscribe(c *C) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	msgc := s.agg.ReadLastNAndSubscribe("app", 1, ctx.Done())
+	msgc := s.agg.ReadLastNAndSubscribe("app", -1, nil, ctx.Done())
 	timeout := time.After(5 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case msg := <-msgc:
+			c.Assert(msg, Not(IsNil))
+		case <-timeout:
+			c.Fatalf("timeout waiting for send on msgc")
+		}
+	}
+	select {
+	case msg := <-msgc:
+		c.Fatalf("unexpected message received: %+v", msg)
+	default:
+	}
+	cancel()
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	msgc = s.agg.ReadLastNAndSubscribe("app", 1, nil, ctx.Done())
+	timeout = time.After(5 * time.Second)
 
 	select {
 	case msg := <-msgc:
@@ -143,6 +197,69 @@ func (s *LogAggregatorTestSuite) TestAggregatorReadLastNAndSubscribe(c *C) {
 
 	for i := 0; i < 5; i++ {
 		line := fmt.Sprintf("60 <40>1 2012-11-30T07:12:53+00:00 host app web.1 - - message %d", i)
+		_, err = conn.Write([]byte(line))
+		c.Assert(err, IsNil)
+		<-messageReceived // wait for message to be received
+
+		select {
+		case msg := <-msgc:
+			c.Assert(string(msg.Msg), Equals, fmt.Sprintf("message %d", i))
+		case <-timeout:
+			c.Fatalf("timeout waiting for followed message %d on msgc", i)
+		}
+	}
+}
+
+func (s *LogAggregatorTestSuite) TestAggregatorReadLastNAndSubscribe_Filtered(c *C) {
+	// set up testing hook:
+	messageReceived := make(chan struct{})
+	afterMessage = func() {
+		messageReceived <- struct{}{}
+	}
+	defer func() { afterMessage = nil }()
+
+	conn, err := net.Dial("tcp", s.agg.Addr)
+	c.Assert(err, IsNil)
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(sampleLogLine1))
+	c.Assert(err, IsNil)
+	_, err = conn.Write([]byte(sampleLogLine2))
+	c.Assert(err, IsNil)
+
+	for i := 0; i < 2; i++ {
+		<-messageReceived // wait for messages to be received
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	filters := []filter{filterJobID{[]byte("2")}}
+	msgc := s.agg.ReadLastNAndSubscribe("app", -1, filters, ctx.Done())
+	timeout := time.After(5 * time.Second)
+
+	select {
+	case msg := <-msgc:
+		c.Assert(string(msg.Msg), Equals, "25 yay this is a message!!!\n")
+	case <-timeout:
+		c.Fatalf("timeout waiting for send on msgc")
+	}
+
+	// make sure we skip messages we don't want
+	for i := 0; i < 5; i++ {
+		line := fmt.Sprintf("60 <40>1 2012-11-30T07:12:53+00:00 host app web.1 - - message %d", i)
+		_, err = conn.Write([]byte(line))
+		c.Assert(err, IsNil)
+		<-messageReceived // wait for message to be received
+
+		select {
+		case msg := <-msgc:
+			c.Fatalf("received unexpected msg %d: %s", i, string(msg.Msg))
+		default:
+		}
+	}
+	// make sure we get messages we do want
+	for i := 5; i < 10; i++ {
+		line := fmt.Sprintf("60 <40>1 2012-11-30T07:12:53+00:00 host app web.2 - - message %d", i)
 		_, err = conn.Write([]byte(line))
 		c.Assert(err, IsNil)
 		<-messageReceived // wait for message to be received

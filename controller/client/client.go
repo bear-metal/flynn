@@ -293,18 +293,28 @@ func (c *Client) GetApp(appID string) (*ct.App, error) {
 // above zero, the number of lines returned will be capped at that value.
 // Otherwise, all available logs are returned. If follow is true, new log lines
 // are streamed after the buffered log.
-func (c *Client) GetAppLog(appID string, lines int, follow bool) (io.ReadCloser, error) {
+func (c *Client) GetAppLog(appID string, options *ct.LogOpts) (io.ReadCloser, error) {
 	path := fmt.Sprintf("/apps/%s/log", appID)
-	query := url.Values{}
-	if lines >= 0 {
-		query.Add("lines", strconv.Itoa(lines))
+	if options != nil {
+		opts := *options
+		query := url.Values{}
+		if opts.Follow {
+			query.Add("follow", "true")
+		}
+		if opts.JobID != "" {
+			query.Add("job_id", opts.JobID)
+		}
+		if opts.Lines != nil {
+			query.Add("lines", strconv.Itoa(*opts.Lines))
+		}
+		if opts.ProcessType != "" {
+			query.Add("process_type", opts.ProcessType)
+		}
+		if encodedQuery := query.Encode(); encodedQuery != "" {
+			path = fmt.Sprintf("%s?%s", path, encodedQuery)
+		}
 	}
-	if follow {
-		query.Add("follow", "true")
-	}
-	if encodedQuery := query.Encode(); encodedQuery != "" {
-		path = fmt.Sprintf("%s?%s", path, encodedQuery)
-	}
+
 	res, err := c.RawReq("GET", path, nil, nil, nil)
 	if err != nil {
 		return nil, err
