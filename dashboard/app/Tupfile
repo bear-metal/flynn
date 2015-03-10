@@ -1,7 +1,7 @@
 include_rules
 
-: $(ROOT)/util/cedarish/<docker> |> ^ docker build dashboard-builder^ cat $(ROOT)/log/docker-cedarish.log > /dev/null && ./build.sh image | tee %o |> $(ROOT)/log/docker-dashboard-builder.log <docker>
+: $(ROOT)/util/rubyassetbuilder/* $(ROOT)/util/cedarish/<docker> |> ^ docker build dashboard-builder^ cat $(ROOT)/log/docker-cedarish.log > /dev/null && $(ROOT)/util/rubyassetbuilder/build.sh image dashboard | tee %o |> $(ROOT)/log/docker-dashboard-builder.log <docker>
 : foreach $(ROOT)/installer/app/src/images/*.png |> !cp |> ./lib/installer/images/%g.png
 : foreach $(ROOT)/installer/app/src/views/*.js.jsx |> !cp |> ./lib/installer/views/%g.js.jsx
 : foreach $(ROOT)/installer/app/src/views/css/*.js |> !cp |> ./lib/installer/views/css/%g.js
-: ./lib/installer/images/* ./lib/installer/views/* ./lib/installer/views/css/* $(ROOT)/log/docker-dashboard-builder.log |> ./build.sh app |> dashboard.tar
+: ./lib/installer/images/* ./lib/installer/views/* ./lib/installer/views/css/* $(ROOT)/log/docker-dashboard-builder.log |> $(ROOT)/util/rubyassetbuilder/build.sh app dashboard |> dashboard.tar

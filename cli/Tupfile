@@ -1,2 +1,6 @@
 include_rules
-: $(ROOT)/util/release/flynn-release |> !go |> flynn-cli
+: $(ROOT)/util/rubyassetbuilder/* $(ROOT)/util/cedarish/<docker> |> ^ docker build installer-builder^ cat $(ROOT)/log/docker-cedarish.log > /dev/null && $(ROOT)/util/rubyassetbuilder/build.sh image installer | tee %o |> $(ROOT)/log/docker-installer-builder.log <docker>
+: $(ROOT)/log/docker-installer-builder.log |> $(ROOT)/util/rubyassetbuilder/build.sh app installer |> $(ROOT)/installer/app/build/*
+: |> go build -o bin/go-bindata $(ROOT)/Godeps/_workspace/src/github.com/jteeuwen/go-bindata/go-bindata |> bin/go-bindata/
+: $(ROOT)/installer/app/build/* bin/go-bindata |> go generate $(ROOT)/installer/ |> $(ROOT)/installer/bindata.go
+: $(ROOT)/installer/bindata.go $(ROOT)/util/release/flynn-release |> !go |> flynn-cli
